@@ -1,0 +1,15 @@
+-r requirements.txt
+
+# Testing
+pytest
+httpx
+
+# Code style & linting
+ruff
+black
+
+# Typing (optional)
+mypy
+
+# Pre-commit hooks
+pre-commit

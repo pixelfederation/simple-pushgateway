@@ -1,0 +1,79 @@
+containers:
+  pushgateway:
+    image:
+      repository: ghcr.io/pixelfederation/simple-pushgateway
+      tag: 0.0.1
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 100m
+        memory: 20Mi
+    serverPort: 8080
+    # env:
+    #   REDIS_HOST: redis
+    #   REDIS_PORT: "6379"
+    #   REDIS_TLS: "false"
+    #   REDIS_TLS_INSECURE: "false"
+    #   DEFAULT_TTL: "7200"
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 100%
+    maxUnavailable: 1
+
+livenessProbe:
+  httpGet:
+    path: "/health"
+    port: 8080
+  initialDelaySeconds: 10
+  timeoutSeconds: 5
+  periodSeconds: 10
+  failureThreshold: 10
+
+readinessProbe:
+  httpGet:
+    path: "/health"
+    port: 8080
+  initialDelaySeconds: 10
+  timeoutSeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+service:
+  type: ClusterIP
+  port: 80
+  labels: {}
+  annotations: {}
+  topologyKeys: []
+#  - kubernetes.io/hostname
+#  - topology.kubernetes.io/zone
+#  - topology.kubernetes.io/region
+#  - '*'
+
+serviceMonitor:
+  enabled: false
+  # targetLabels: []
+  ## optional scrape interval
+  # scrapeInterval: "60s"
+  honorLabels: true
+  # metricRelabelings: false
+
+podDisruptionBudget:
+  enabled: false
+  # maxUnavailable: 1
+  # annotations: {}
+
+replicaCount: 1
+
+autoscaling:
+  enabled: false
+  # minReplicas: 3
+  # maxReplicas: 20
+  # targetCPUUtilizationPercentage: 75
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}

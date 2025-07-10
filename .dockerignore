@@ -1,0 +1,28 @@
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Ignore virtual environments
+.venv/
+env/
+venv/
+
+# Git & metadata
+.git
+.gitignore
+
+# Local configs
+.env
+*.env
+
+# IDE/editor settings
+.vscode/
+.idea/
+
+# Tests and docs (if not needed in image)
+tests/
+docs/
+
+# Anything else not required inside Docker image
+*.log

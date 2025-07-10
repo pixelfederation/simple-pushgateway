@@ -1,0 +1,1 @@
+Simple-pushgateway release has been installed or upgraded. For information on configuring simple-pushgateway see the readme.

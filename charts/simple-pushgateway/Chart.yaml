@@ -1,0 +1,13 @@
+apiVersion: v2
+description: A minimal Prometheus pushgateway replacement using FastAPI, Redis and with TTL support
+home: https://github.com/pixelfederation/simple-pushgateway
+name: simple-pushgateway
+type: application
+version: 0.1.0
+appVersion: 0.1.0
+sources:
+  - https://github.com/pixelfederation/simple-pushgateway
+maintainers:
+- name: maso7
+  email: 41568766+maso7@users.noreply.github.com
+
