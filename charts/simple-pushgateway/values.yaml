@@ -2,19 +2,19 @@ containers:
   pushgateway:
     image:
       repository: ghcr.io/pixelfederation/simple-pushgateway
-      tag: 0.0.1
+      # tag: latest # default .Chart.AppVersion
       pullPolicy: IfNotPresent
     resources:
       requests:
         cpu: 100m
         memory: 20Mi
     serverPort: 8080
-    # env:
-    #   REDIS_HOST: redis
-    #   REDIS_PORT: "6379"
-    #   REDIS_TLS: "false"
-    #   REDIS_TLS_INSECURE: "false"
-    #   DEFAULT_TTL: "7200"
+    env:
+      REDIS_HOST: "localhost"
+      REDIS_PORT: "6379"
+      REDIS_TLS: "false"
+      REDIS_TLS_INSECURE: "false"
+      DEFAULT_TTL: "7200"
 
 strategy:
   type: RollingUpdate
@@ -50,6 +50,17 @@ service:
 #  - topology.kubernetes.io/zone
 #  - topology.kubernetes.io/region
 #  - '*'
+
+ingress:
+  enabled: false
+  # className: ""
+  # annotations: {}
+  # hosts:
+  #   - host: push.local
+  #     paths:
+  #       - path: /
+  #         pathType: Prefix
+  # tls: []
 
 serviceMonitor:
   enabled: false

@@ -36,7 +36,7 @@ spec:
     spec:
       containers:
       - name: "pushgateway"
-        image: {{ .Values.containers.pushgateway.image.repository }}:{{ .Values.containers.pushgateway.image.tag }}
+        image: {{ .Values.containers.pushgateway.image.repository }}:{{ default .Chart.AppVersion .Values.containers.pushgateway.image.tag }}
         imagePullPolicy: {{ .Values.containers.pushgateway.image.pullPolicy | quote }}
         {{- with .Values.containers.pushgateway.resources }}
         resources: {{ toYaml . | nindent 10 }}

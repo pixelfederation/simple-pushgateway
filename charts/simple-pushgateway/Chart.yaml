@@ -3,8 +3,8 @@ description: A minimal Prometheus pushgateway replacement using FastAPI, Redis a
 home: https://github.com/pixelfederation/simple-pushgateway
 name: simple-pushgateway
 type: application
-version: 0.1.0
-appVersion: 0.1.0
+version: 0.2.0
+appVersion: 0.2.0
 sources:
   - https://github.com/pixelfederation/simple-pushgateway
 maintainers:
