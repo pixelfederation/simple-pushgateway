@@ -2,6 +2,23 @@ apiVersion: v1
 entries:
   simple-pushgateway:
   - apiVersion: v2
+    appVersion: 0.2.0
+    created: "2025-07-11T07:40:10.496514003Z"
+    description: A minimal Prometheus pushgateway replacement using FastAPI, Redis
+      and with TTL support
+    digest: f110e9d510a57e4678b901eb90c18e24f07f10a4cf0d43c3540665485d6acd18
+    home: https://github.com/pixelfederation/simple-pushgateway
+    maintainers:
+    - email: 41568766+maso7@users.noreply.github.com
+      name: maso7
+    name: simple-pushgateway
+    sources:
+    - https://github.com/pixelfederation/simple-pushgateway
+    type: application
+    urls:
+    - https://github.com/pixelfederation/simple-pushgateway/releases/download/simple-pushgateway-0.2.0/simple-pushgateway-0.2.0.tgz
+    version: 0.2.0
+  - apiVersion: v2
     appVersion: 0.1.0
     created: "2025-07-10T12:06:34.965786556Z"
     description: A minimal Prometheus pushgateway replacement using FastAPI, Redis
@@ -18,4 +35,4 @@ entries:
     urls:
     - https://github.com/pixelfederation/simple-pushgateway/releases/download/simple-pushgateway-0.1.0/simple-pushgateway-0.1.0.tgz
     version: 0.1.0
-generated: "2025-07-10T12:06:34.965792798Z"
+generated: "2025-07-11T07:40:10.49652294Z"
