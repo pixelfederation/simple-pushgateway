@@ -22,10 +22,10 @@ from prometheus_client.parser import text_string_to_metric_families
 from redis.exceptions import RedisError
 
 # Global config
-REDIS_PREFIX = "metric:"
+REDIS_PREFIX = "metric:" #ENV VAR!?
 DEFAULT_TTL = int(os.getenv("DEFAULT_TTL", "7200"))  # 2 hours
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO) # LOGLEVEL SET VIA ENV VAR?! OR -v -vv -vvv...
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +57,7 @@ def _make_key(name: str, labels: Dict[str, str]) -> str:
 
 
 def _parse_ttl(labels: Dict[str, str]) -> int:
-    ttl_label = "pushgw_ttl"
+    ttl_label = "pushgw_ttl" #NAMING CONSITENCY pushgw vs pushgateway
     ttl_raw = labels.pop(ttl_label, "0")
     try:
         ttl = int(ttl_raw)
@@ -72,7 +72,7 @@ app = FastAPI()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global redis_client
+    global redis_client # must be global var? cannot be passed as param to this async func? global client is ok, but not global variable
 
     REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
     REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
@@ -176,7 +176,7 @@ async def get_metrics() -> PlainTextResponse:
     keys = await redis_client.keys(f"{REDIS_PREFIX}*")
 
     for key in keys:
-        if await redis_client.type(key) != "string":
+        if await redis_client.type(key) != "string":  # type checking via string? is there somthing like redis.STRING to compare with?
             continue
         try:
             entry_raw = await redis_client.get(key)
@@ -190,6 +190,7 @@ async def get_metrics() -> PlainTextResponse:
             metrics_by_name[name].append((labels, value))
             type_by_name[name] = mtype
         except Exception:
+            # log execetion every time, now it makes you blind
             continue
 
     for name, entries in metrics_by_name.items():
@@ -212,6 +213,7 @@ async def get_metrics() -> PlainTextResponse:
                     filtered = {k: labels.get(k, "") for k in label_keys}
                     g.labels(**filtered).set(value)
         except ValueError:
+            # log execetion every time, now it makes you blind, but less then case before, because it was generic exception
             # metric already exists (e.g. from other Redis key)
             continue
 
@@ -220,3 +222,5 @@ async def get_metrics() -> PlainTextResponse:
     redis_metrics = generate_latest(redis_registry).decode("utf-8")
 
     return PlainTextResponse(internal_metrics + redis_metrics, media_type="text/plain")
+
+    #LOGGING IN BETWEEN WITH DEBUG LEVEL
