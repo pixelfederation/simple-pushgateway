@@ -25,7 +25,19 @@ from redis.exceptions import RedisError
 REDIS_PREFIX = "metric:"
 DEFAULT_TTL = int(os.getenv("DEFAULT_TTL", "7200"))  # 2 hours
 
-logging.basicConfig(level=logging.INFO)
+log_level_str = os.getenv("LOG_LEVEL", "WARNING").upper()
+
+LOG_LEVELS = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+    "NOTSET": logging.NOTSET
+}
+
+log_level = LOG_LEVELS.get(log_level_str, logging.WARNING)
+logging.basicConfig(level=log_level)
 logger = logging.getLogger(__name__)
 
 
