@@ -33,7 +33,7 @@ LOG_LEVELS = {
     "WARNING": logging.WARNING,
     "INFO": logging.INFO,
     "DEBUG": logging.DEBUG,
-    "NOTSET": logging.NOTSET
+    "NOTSET": logging.NOTSET,
 }
 
 log_level = LOG_LEVELS.get(log_level_str, logging.WARNING)
@@ -69,8 +69,7 @@ def _make_key(name: str, labels: Dict[str, str]) -> str:
 
 
 def _parse_ttl(labels: Dict[str, str]) -> int:
-    ttl_label = "pushgw_ttl"
-    ttl_raw = labels.pop(ttl_label, "0")
+    ttl_raw = labels.pop("pushgateway_ttl", labels.pop("pushgw_ttl", "0"))
     try:
         ttl = int(ttl_raw)
         return ttl if ttl > 0 else DEFAULT_TTL
