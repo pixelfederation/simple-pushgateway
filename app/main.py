@@ -22,9 +22,8 @@ from prometheus_client.parser import text_string_to_metric_families
 from redis.exceptions import RedisError
 
 # Global config
-REDIS_PREFIX = "metric:"
+REDIS_METRICS_PREFIX =  os.getenv("REDIS_METRICS_PREFIX", "metric:")
 DEFAULT_TTL = int(os.getenv("DEFAULT_TTL", "7200"))  # 2 hours
-
 log_level_str = os.getenv("LOG_LEVEL", "WARNING").upper()
 
 LOG_LEVELS = {
@@ -65,7 +64,7 @@ redis_client: Optional[redis.Redis] = None
 # Helper functions
 def _make_key(name: str, labels: Dict[str, str]) -> str:
     label_str = ",".join(f"{k}={v}" for k, v in sorted(labels.items()))
-    return f"{REDIS_PREFIX}{name}|{label_str}"
+    return f"{REDIS_METRICS_PREFIX}{name}|{label_str}"
 
 
 def _parse_ttl(labels: Dict[str, str]) -> int:
@@ -184,7 +183,7 @@ async def get_metrics() -> PlainTextResponse:
     type_by_name: Dict[str, str] = {}
 
     assert redis_client is not None
-    keys = await redis_client.keys(f"{REDIS_PREFIX}*")
+    keys = await redis_client.keys(f"{REDIS_METRICS_PREFIX}*")
 
     for key in keys:
         if await redis_client.type(key) != "string":
