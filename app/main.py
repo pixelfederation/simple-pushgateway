@@ -101,7 +101,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             port=REDIS_PORT,
             password=REDIS_PASSWORD,
             ssl=REDIS_TLS,
-            ssl_cert_reqs=None if REDIS_TLS_INSECURE else ssl.CERT_REQUIRED,
+            ssl_cert_reqs=ssl.CERT_NONE if REDIS_TLS_INSECURE else ssl.CERT_REQUIRED,
             decode_responses=True,
         )
         await redis_client.ping()
