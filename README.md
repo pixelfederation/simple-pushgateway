@@ -18,16 +18,17 @@ It stores pushed metrics in Redis with TTL and exposes them via the `/metrics` e
 
 ## Environment Variables
 
-| Variable            | Description                                         | Default         |
-|---------------------|-----------------------------------------------------|-----------------|
-| `APP_PORT`          | Port to run the server on                           | `8080`          |
-| `REDIS_HOST`        | Redis hostname or IP address                        | `localhost`     |
-| `REDIS_PORT`        | Redis port                                          | `6379`          |
-| `REDIS_DB`          | Redis database index                                | `0`             |
-| `REDIS_USERNAME`    | Redis username (if auth required)                   | *(empty)*       |
-| `REDIS_PASSWORD`    | Redis password (if auth required)                   | *(empty)*       |
-| `REDIS_TLS`         | Enable TLS connection to Redis (`true` or `false`)  | `false`         |
-| `REDIS_TLS_INSECURE`| Skip TLS certificate verification (`true` or `false`) | `false`      |
+| Variable               | Description                                         | Default         |
+|------------------------|-----------------------------------------------------|-----------------|
+| `APP_PORT`             | Port to run the server on                           | `8080`          |
+| `REDIS_HOST`           | Redis hostname or IP address                        | `localhost`     |
+| `REDIS_PORT`           | Redis port                                          | `6379`          |
+| `REDIS_DB`             | Redis database index                                | `0`             |
+| `REDIS_USERNAME`       | Redis username (if auth required)                   | *(empty)*       |
+| `REDIS_PASSWORD`       | Redis password (if auth required)                   | *(empty)*       |
+| `REDIS_TLS`            | Enable TLS connection to Redis (`true` or `false`)  | `false`         |
+| `REDIS_TLS_INSECURE`   | Skip TLS certificate verification (`true` or `false`) | `false`      |
+| `REDIS_METRICS_PREFIX` | Prefix for keys used to store Prometheus metrics in Redis | `metric:`       |
 
 ---
 
