@@ -14,6 +14,7 @@ It stores pushed metrics in Redis with TTL and exposes them via the `/metrics` e
 - Internal metrics counting number of pushed metrics and number of push requests
 - Support for Redis connections with TLS and option to skip invalid certificates
 - Support for Redis Cluster (enable with `REDIS_CLUSTER=true`)
+- Leader election for multi-replica deployments (enable with `LEADER_ELECTION=true`) — only one replica exposes the pushed metrics, so Prometheus aggregations don't double-count them
 - Fully configurable via environment variables
 
 ---
@@ -29,6 +30,10 @@ It stores pushed metrics in Redis with TTL and exposes them via the `/metrics` e
 | `REDIS_USERNAME`       | Redis username (optional, if auth required)         | *(empty)*       |
 | `REDIS_PASSWORD`       | Redis password (optional, if auth required)         | *(empty)*       |
 | `REDIS_CLUSTER`        | Connect to Redis Cluster instead of a standalone server (`true` or `false`) | `false` |
+| `LEADER_ELECTION`      | Only one replica (the leader) exposes pushed metrics on `/metrics` (`true` or `false`) | `false` |
+| `LEADER_KEY`           | Redis key used for the leader lock                  | `pushgateway:leader` |
+| `LEADER_TTL`           | Leader lock TTL in seconds                          | `60`            |
+| `LEADER_REFRESH_INTERVAL` | How often (seconds) the background task refreshes the leader lock | `20` |
 | `REDIS_TLS`            | Enable TLS connection to Redis (`true` or `false`)  | `false`         |
 | `REDIS_TLS_INSECURE`   | Skip TLS certificate verification (`true` or `false`) | `false`      |
 | `REDIS_METRICS_PREFIX` | Prefix for keys used to store Prometheus metrics in Redis | `metrics:`      |
@@ -201,6 +206,14 @@ curl -H "Accept: application/json" http://localhost:8080/metrics
 ```bash
 curl http://localhost:8080/health
 ```
+
+### Running multiple replicas
+
+Pushes can be load-balanced across any number of replicas (all state lives in Redis). Scraping is the problem: Prometheus scrapes every pod behind a ServiceMonitor, each pod would return the same pushed metrics under a different `instance` label, and `sum()` aggregations would count them multiple times.
+
+Set `LEADER_ELECTION=true` to fix this. The replicas elect a leader through an atomic Redis lock (`SET NX` semantics via a Lua script): only the leader returns the pushed metrics on `/metrics`, the other replicas return just their own internal metrics. A background task refreshes the lock every `LEADER_REFRESH_INTERVAL` seconds (keep `LEADER_TTL` at 2–3× that), so leadership is stable — the lock only changes hands when the leader dies or is shut down. On graceful shutdown the leader releases the lock so a new leader takes over immediately; on a hard crash the lock expires after at most `LEADER_TTL` seconds.
+
+Each replica exposes a `pushgateway_metrics_leader` gauge (1 on the leader, 0 elsewhere), so you can monitor and alert on the election itself. Since the pushed metrics move to a different `instance` label on failover, aggregate them with `sum by (...)` / `max by (...)` over the labels you care about rather than relying on the `instance` label.
 
 ---
 

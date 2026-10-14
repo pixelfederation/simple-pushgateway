@@ -1,3 +1,4 @@
+import asyncio
 import fnmatch
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Generator
@@ -8,7 +9,14 @@ from fastapi.testclient import TestClient
 from redis.asyncio import Redis
 from redis.asyncio.cluster import RedisCluster
 
-from app.main import DEFAULT_TTL, _create_redis_client, _parse_ttl, app
+from app.main import (
+    DEFAULT_TTL,
+    _create_redis_client,
+    _parse_ttl,
+    _release_leadership,
+    _try_acquire_leadership,
+    app,
+)
 
 
 class FakeRedis:
@@ -35,10 +43,39 @@ class FakeRedis:
     async def get(self, key: str) -> str | None:
         return self.store.get(key)
 
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str) -> int:
+        # Emulates the semantics of the two leader-election Lua scripts.
+        # The real scripts are exercised against real Redis in tests/e2e.
+        key, owner = keys_and_args[0], keys_and_args[1]
+        if "expire" in script:  # acquire-or-refresh
+            current = self.store.get(key)
+            if current is None:
+                self.store[key] = owner
+                self.ttls[key] = int(keys_and_args[2])
+                return 1
+            if current == owner:
+                self.ttls[key] = int(keys_and_args[2])
+                return 1
+            return 0
+        # release
+        if self.store.get(key) == owner:
+            del self.store[key]
+            return 1
+        return 0
+
 
 @asynccontextmanager
 async def fake_lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.redis = FakeRedis()
+    app.state.is_leader = True
+    yield
+    app.state.redis = None
+
+
+@asynccontextmanager
+async def fake_lifespan_non_leader(app: FastAPI) -> AsyncIterator[None]:
+    app.state.redis = FakeRedis()
+    app.state.is_leader = False
     yield
     app.state.redis = None
 
@@ -46,6 +83,13 @@ async def fake_lifespan(app: FastAPI) -> AsyncIterator[None]:
 @pytest.fixture
 def client_with_fake_redis() -> Generator[TestClient, None, None]:
     app.router.lifespan_context = fake_lifespan
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def non_leader_client() -> Generator[TestClient, None, None]:
+    app.router.lifespan_context = fake_lifespan_non_leader
     with TestClient(app) as c:
         yield c
 
@@ -179,3 +223,59 @@ def test_create_redis_client_cluster(monkeypatch: pytest.MonkeyPatch) -> None:
 
     client = _create_redis_client()
     assert isinstance(client, RedisCluster)
+
+
+def test_non_leader_scrape_hides_redis_metrics(non_leader_client: TestClient) -> None:
+    res = non_leader_client.post("/metrics/job/test-job", json={"name": "leader_only_metric", "value": 1})
+    assert res.status_code == 200
+
+    scrape = non_leader_client.get("/metrics")
+    assert scrape.status_code == 200
+    assert "leader_only_metric" not in scrape.text
+    # internal per-pod metrics stay exposed on every replica
+    assert "pushgateway_push_requests_total" in scrape.text
+
+
+def test_non_leader_json_scrape_is_empty(non_leader_client: TestClient) -> None:
+    non_leader_client.post("/metrics/job/test-job", json={"name": "leader_only_metric", "value": 1})
+
+    res = non_leader_client.get("/metrics", headers={"Accept": "application/json"})
+    assert res.status_code == 200
+    assert res.json() == {}
+
+
+def test_leader_gauge_is_exposed(client_with_fake_redis: TestClient) -> None:
+    scrape = client_with_fake_redis.get("/metrics")
+    assert "pushgateway_metrics_leader" in scrape.text
+
+
+def test_try_acquire_leadership_when_free() -> None:
+    fake = FakeRedis()
+    assert asyncio.run(_try_acquire_leadership(fake, "leader", "pod-a", 60)) is True
+    assert fake.store["leader"] == "pod-a"
+    assert fake.ttls["leader"] == 60
+
+
+def test_try_acquire_leadership_refreshes_own_lock() -> None:
+    fake = FakeRedis()
+    fake.store["leader"] = "pod-a"
+    fake.ttls["leader"] = 5
+    assert asyncio.run(_try_acquire_leadership(fake, "leader", "pod-a", 60)) is True
+    assert fake.ttls["leader"] == 60
+
+
+def test_try_acquire_leadership_respects_foreign_lock() -> None:
+    fake = FakeRedis()
+    fake.store["leader"] = "pod-a"
+    assert asyncio.run(_try_acquire_leadership(fake, "leader", "pod-b", 60)) is False
+    assert fake.store["leader"] == "pod-a"
+
+
+def test_release_leadership_only_own_lock() -> None:
+    fake = FakeRedis()
+    fake.store["leader"] = "pod-a"
+    asyncio.run(_release_leadership(fake, "leader", "pod-b"))
+    assert fake.store["leader"] == "pod-a"
+
+    asyncio.run(_release_leadership(fake, "leader", "pod-a"))
+    assert "leader" not in fake.store

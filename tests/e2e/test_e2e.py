@@ -167,3 +167,67 @@ def test_e2e_cluster_ttl_applied(cluster_app: TestClient) -> None:
     check = _require_cluster()
     key = f"{REDIS_METRICS_PREFIX}{name}|job=e2e-cluster"
     assert 7200 - 60 < check.ttl(key) <= 7200
+
+
+def _leader_app(monkeypatch: pytest.MonkeyPatch, leader_key: str) -> TestClient:
+    monkeypatch.setenv("LEADER_ELECTION", "true")
+    monkeypatch.setenv("LEADER_KEY", leader_key)
+    monkeypatch.setenv("LEADER_TTL", "3")
+    monkeypatch.setenv("LEADER_REFRESH_INTERVAL", "0.5")
+    return _app_client(monkeypatch, cluster=False)
+
+
+def test_e2e_leader_acquires_lock_and_serves_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    check = _require_standalone()
+    leader_key = f"e2e:leader:{uuid.uuid4().hex[:8]}"
+
+    with _leader_app(monkeypatch, leader_key) as client:
+        name = _unique("e2e_leader_metric")
+        client.post("/metrics/job/e2e-leader", json={"name": name, "value": 1})
+
+        scrape = client.get("/metrics")
+        assert name in scrape.text
+        assert "pushgateway_metrics_leader 1.0" in scrape.text
+
+        # the lock is held in Redis with a TTL
+        assert check.get(leader_key) is not None
+        assert 0 < check.ttl(leader_key) <= 3
+
+
+def test_e2e_non_leader_hides_metrics_and_takes_over(monkeypatch: pytest.MonkeyPatch) -> None:
+    check = _require_standalone()
+    leader_key = f"e2e:leader:{uuid.uuid4().hex[:8]}"
+    # another pod already holds the lock
+    check.set(leader_key, "other-pod", ex=30)
+
+    with _leader_app(monkeypatch, leader_key) as client:
+        name = _unique("e2e_follower_metric")
+        client.post("/metrics/job/e2e-leader", json={"name": name, "value": 1})
+
+        scrape = client.get("/metrics")
+        assert name not in scrape.text
+        assert "pushgateway_metrics_leader 0.0" in scrape.text
+        # pushes still work on non-leaders, data lands in Redis
+        assert len(check.keys(f"{REDIS_METRICS_PREFIX}{name}*")) == 1
+        # the foreign lock was not touched
+        assert check.get(leader_key) == "other-pod"
+
+        # the old leader dies: lock released -> this instance takes over
+        check.delete(leader_key)
+        time.sleep(1.5)  # > LEADER_REFRESH_INTERVAL
+
+        scrape = client.get("/metrics")
+        assert name in scrape.text
+        assert "pushgateway_metrics_leader 1.0" in scrape.text
+
+
+def test_e2e_leader_releases_lock_on_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    check = _require_standalone()
+    leader_key = f"e2e:leader:{uuid.uuid4().hex[:8]}"
+
+    with _leader_app(monkeypatch, leader_key) as client:
+        client.get("/metrics")
+        assert check.get(leader_key) is not None
+
+    # graceful shutdown must delete the lock so a new leader can take over immediately
+    assert check.get(leader_key) is None

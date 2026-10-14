@@ -1,8 +1,11 @@
+import asyncio
 import json
 import logging
 import os
+import socket
 import ssl
 import time
+import uuid
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -55,6 +58,69 @@ push_request_counter = Counter(
     ["endpoint"],
 )
 push_metrics_counter = Counter("pushgateway_pushed_metrics_total", "Number of metrics pushed via pushgateway")
+leader_gauge = Gauge(
+    "pushgateway_metrics_leader",
+    "1 if this instance currently exposes the pushed metrics on /metrics, 0 otherwise",
+)
+leader_gauge.set(1)  # without leader election every instance exposes metrics
+
+
+# Leader election Lua scripts. Both run atomically inside Redis, which closes
+# the race windows a GET + SET/DEL pair would have (e.g. the lock expiring and
+# being taken over by another pod between the two commands).
+
+# Acquire the lock if it is free, or refresh its TTL if we already own it.
+# KEYS[1] = lock key, ARGV[1] = our instance id, ARGV[2] = TTL in seconds.
+# Returns 1 when we are the leader, 0 when someone else owns the lock.
+ACQUIRE_LEADER_SCRIPT = """
+local owner = redis.call("get", KEYS[1])
+if owner == false then
+    redis.call("set", KEYS[1], ARGV[1], "EX", ARGV[2])
+    return 1
+elseif owner == ARGV[1] then
+    redis.call("expire", KEYS[1], ARGV[2])
+    return 1
+else
+    return 0
+end
+"""
+
+# Release the lock, but only if we still own it — never delete a lock a
+# different pod acquired after ours expired.
+# KEYS[1] = lock key, ARGV[1] = our instance id.
+RELEASE_LEADER_SCRIPT = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+else
+    return 0
+end
+"""
+
+
+async def _try_acquire_leadership(client: Any, key: str, instance_id: str, ttl: int) -> bool:
+    return bool(await client.eval(ACQUIRE_LEADER_SCRIPT, 1, key, instance_id, str(ttl)))
+
+
+async def _release_leadership(client: Any, key: str, instance_id: str) -> None:
+    await client.eval(RELEASE_LEADER_SCRIPT, 1, key, instance_id)
+
+
+async def _leader_loop(app: FastAPI, key: str, instance_id: str, ttl: int, interval: float) -> None:
+    # Keeps (or tries to take) leadership in the background, independent of
+    # Prometheus scrapes, so the lock cannot expire between scrapes.
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            is_leader = await _try_acquire_leadership(app.state.redis, key, instance_id, ttl)
+        except RedisError:
+            logger.warning("Leader election: Redis unreachable, dropping leadership", exc_info=True)
+            is_leader = False
+        if is_leader != app.state.is_leader:
+            logger.info(
+                "Leader election: this instance (%s) is %s leader", instance_id, "now" if is_leader else "no longer"
+            )
+        app.state.is_leader = is_leader
+        leader_gauge.set(1 if is_leader else 0)
 
 
 # Helper functions
@@ -196,6 +262,16 @@ def _create_redis_client() -> Union[redis.Redis, RedisCluster]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    leader_election = os.getenv("LEADER_ELECTION", "false").lower() in ("true", "1", "yes")
+    leader_key = os.getenv("LEADER_KEY", "pushgateway:leader")
+    leader_ttl = int(os.getenv("LEADER_TTL", "60"))
+    leader_refresh_interval = float(os.getenv("LEADER_REFRESH_INTERVAL", "20"))
+    # Unique per process, so replicas on the same host never collide
+    instance_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:6]}"
+
+    app.state.is_leader = not leader_election  # without election everyone exposes metrics
+    app.state.leader_task = None
+
     try:
         app.state.redis = _create_redis_client()
 
@@ -207,12 +283,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             os.getenv("REDIS_HOST", "localhost"),
             os.getenv("REDIS_PORT", "6379"),
         )
+
+        if leader_election:
+            app.state.is_leader = await _try_acquire_leadership(app.state.redis, leader_key, instance_id, leader_ttl)
+            leader_gauge.set(1 if app.state.is_leader else 0)
+            logger.info("Leader election enabled, instance %s, leader: %s", instance_id, app.state.is_leader)
+            app.state.leader_task = asyncio.create_task(
+                _leader_loop(app, leader_key, instance_id, leader_ttl, leader_refresh_interval)
+            )
     except RedisError:
         logger.error("❌ Connections to Redis failed", exc_info=True)
 
     yield  # App runs here
 
+    if app.state.leader_task:
+        app.state.leader_task.cancel()
     if app.state.redis:
+        if leader_election and app.state.is_leader:
+            try:
+                await _release_leadership(app.state.redis, leader_key, instance_id)
+                logger.info("Leader election: lock released on shutdown")
+            except RedisError:
+                logger.warning("Leader election: could not release lock on shutdown", exc_info=True)
         await app.state.redis.aclose()
         logger.info("🔌 Redis client closed")
 
@@ -303,6 +395,14 @@ async def get_metrics(
     redis_registry = CollectorRegistry()
     metrics_by_name: Dict[str, List[Tuple[Dict[str, str], Union[int, float]]]] = defaultdict(list)
     type_by_name: Dict[str, str] = {}
+
+    # With leader election enabled, only the leader exposes the pushed metrics;
+    # the other replicas serve just their own internal metrics so that
+    # aggregations in Prometheus don't count the pushed values multiple times.
+    if not getattr(request.app.state, "is_leader", True):
+        if "application/json" in request.headers.get("accept", ""):
+            return JSONResponse({})
+        return PlainTextResponse(generate_latest(REGISTRY).decode("utf-8"), media_type="text/plain")
 
     async for key in redis.scan_iter(match=f"{REDIS_METRICS_PREFIX}*"):
         if await redis.type(key) != "string":
