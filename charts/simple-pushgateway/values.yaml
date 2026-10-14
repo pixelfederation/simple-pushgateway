@@ -70,8 +70,10 @@ serviceMonitor:
   honorLabels: true
   # metricRelabelings: false
 
+# Set exactly one of minAvailable / maxUnavailable
 podDisruptionBudget:
   enabled: false
+  # minAvailable: 1
   # maxUnavailable: 1
   # annotations: {}
 
