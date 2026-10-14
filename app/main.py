@@ -19,6 +19,7 @@ from prometheus_client import (
     generate_latest,
 )
 from prometheus_client.parser import text_string_to_metric_families
+from redis.asyncio.cluster import RedisCluster
 from redis.exceptions import RedisError
 
 # Global config
@@ -63,53 +64,156 @@ def _make_key(name: str, labels: Dict[str, str]) -> str:
     return f"{REDIS_METRICS_PREFIX}{name}|{label_str}"
 
 
+TTL_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
 def _parse_ttl(labels: Dict[str, str]) -> int:
-    # Parse TTL from label, fallback to old label name
-    ttl_raw = labels.pop("pushgateway_ttl", labels.pop("pushgw_ttl", "0"))
+    # Parse TTL from label, fallback to old label name.
+    # Accepts plain seconds ("300") or a unit suffix s/m/h/d ("30d").
+    ttl_raw = str(labels.pop("pushgateway_ttl", labels.pop("pushgw_ttl", "0")))
+    multiplier = 1
+    if ttl_raw and ttl_raw[-1] in TTL_UNIT_SECONDS:
+        multiplier = TTL_UNIT_SECONDS[ttl_raw[-1]]
+        ttl_raw = ttl_raw[:-1]
     try:
-        ttl = int(ttl_raw)
+        ttl = int(ttl_raw) * multiplier
         return ttl if ttl > 0 else DEFAULT_TTL
     except (TypeError, ValueError):
         return DEFAULT_TTL
+
+
+def _parse_text_samples(text: str) -> List[Dict[str, Any]]:
+    # Parse Prometheus text exposition format into a list of sample dicts
+    try:
+        families = list(text_string_to_metric_families(text))
+    except ValueError as e:
+        logger.warning("Invalid metric text format: %s", e)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid metric text format: {e}",
+        ) from e
+
+    return [
+        {
+            "name": sample.name,
+            "labels": dict(sample.labels),
+            "value": sample.value,
+            "type": family.type,
+        }
+        for family in families
+        for sample in family.samples
+    ]
+
+
+def _parse_json_samples(text: str) -> List[Dict[str, Any]]:
+    # Parse JSON payload: a single metric object or a list of them,
+    # each {"name": str, "value": number, "labels": {str: str}, "type": str}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as e:
+        logger.warning("Invalid JSON metric payload: %s", e)
+        raise HTTPException(status_code=400, detail=f"Invalid JSON metric payload: {e}") from e
+
+    items = payload if isinstance(payload, list) else [payload]
+    samples: List[Dict[str, Any]] = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid JSON metric payload: each metric must be an object",
+            )
+
+        name = item.get("name")
+        value = item.get("value")
+        labels = item.get("labels", {})
+        mtype = item.get("type", "gauge")
+
+        if not isinstance(name, str) or not name:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid JSON metric payload: 'name' must be a non-empty string",
+            )
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid JSON metric payload: 'value' of metric '{name}' must be a number",
+            )
+        if not isinstance(labels, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in labels.items()
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid JSON metric payload: 'labels' of metric '{name}' must be an object of strings",
+            )
+        if not isinstance(mtype, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid JSON metric payload: 'type' of metric '{name}' must be a string",
+            )
+
+        samples.append({"name": name, "labels": dict(labels), "value": value, "type": mtype})
+
+    return samples
 
 
 # FastAPI app
 app = FastAPI()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-    REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-    REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
-    REDIS_TLS = os.getenv("REDIS_TLS", "false").lower() in ("true", "1", "yes")
-    REDIS_TLS_INSECURE = os.getenv("REDIS_TLS_INSECURE", "false").lower() in (
+def _create_redis_client() -> Union[redis.Redis, RedisCluster]:
+    # Build a standalone or cluster client based on environment variables
+    redis_cluster = os.getenv("REDIS_CLUSTER", "false").lower() in ("true", "1", "yes")
+    redis_tls = os.getenv("REDIS_TLS", "false").lower() in ("true", "1", "yes")
+    redis_tls_insecure = os.getenv("REDIS_TLS_INSECURE", "false").lower() in (
         "true",
         "1",
         "yes",
     )
 
+    kwargs: Dict[str, Any] = {
+        "host": os.getenv("REDIS_HOST", "localhost"),
+        "port": int(os.getenv("REDIS_PORT", "6379")),
+        "ssl": redis_tls,
+        "ssl_cert_reqs": ssl.CERT_NONE if redis_tls_insecure else ssl.CERT_REQUIRED,
+        "decode_responses": True,
+    }
+
+    redis_username = os.getenv("REDIS_USERNAME")
+    redis_password = os.getenv("REDIS_PASSWORD")
+    if redis_username:
+        kwargs["username"] = redis_username
+    if redis_password:
+        kwargs["password"] = redis_password
+
+    if redis_cluster:
+        # Redis Cluster has no database selection, REDIS_DB is ignored
+        return RedisCluster(**kwargs)
+
+    kwargs["db"] = int(os.getenv("REDIS_DB", "0"))
+    return redis.Redis(**kwargs)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
-        app.state.redis = redis.Redis(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            password=REDIS_PASSWORD,
-            ssl=REDIS_TLS,
-            ssl_cert_reqs=ssl.CERT_NONE if REDIS_TLS_INSECURE else ssl.CERT_REQUIRED,
-            decode_responses=True,
-        )
+        app.state.redis = _create_redis_client()
 
         if not await app.state.redis.ping():
             raise RuntimeError("Cannot connect to Redis server!")
 
-        logger.info(f"✅ Connection to Redis {REDIS_HOST}:{REDIS_PORT} successful")
+        logger.info(
+            "✅ Connection to Redis %s:%s successful",
+            os.getenv("REDIS_HOST", "localhost"),
+            os.getenv("REDIS_PORT", "6379"),
+        )
     except RedisError:
         logger.error("❌ Connections to Redis failed", exc_info=True)
 
     yield  # App runs here
 
     if app.state.redis:
-        await app.state.redis.close()
+        await app.state.redis.aclose()
         logger.info("🔌 Redis client closed")
 
 
@@ -152,45 +256,39 @@ async def push_metrics(request: Request, job: str, instance: Optional[str], redi
     endpoint_path = str(request.url.path)
     push_request_counter.labels(endpoint=endpoint_path).inc()
 
-    type_by_name: Dict[str, str] = {}
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        samples = _parse_json_samples(text)
+    else:
+        samples = _parse_text_samples(text)
+
     count = 0
 
-    try:
-        families = list(text_string_to_metric_families(text))
-    except ValueError as e:
-        logger.warning("Invalid metric text format: %s", e)
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid metric text format: {e}",
-        ) from e
+    for sample in samples:
+        try:
+            name, labels = sample["name"], sample["labels"]
+            ttl = _parse_ttl(labels)
 
-    for family in families:
-        type_by_name[family.name] = family.type
-        for sample in family.samples:
-            try:
-                name, labels, value = sample.name, dict(sample.labels), sample.value
-                ttl = _parse_ttl(labels)
+            labels["job"] = job
+            if instance:
+                labels["instance"] = instance
 
-                labels["job"] = job
-                if instance:
-                    labels["instance"] = instance
+            key = _make_key(name, labels)
+            data = {
+                "name": name,
+                "value": sample["value"],
+                "labels": labels,
+                "type": sample["type"] or "gauge",
+                "timestamp": time.time(),
+            }
 
-                key = _make_key(name, labels)
-                data = {
-                    "name": name,
-                    "value": value,
-                    "labels": labels,
-                    "type": type_by_name.get(name, "gauge"),
-                    "timestamp": time.time(),
-                }
+            await redis.set(key, json.dumps(data), ex=ttl)
+            count += 1
 
-                await redis.setex(key, ttl, json.dumps(data))
-                count += 1
-
-            except Exception as e:
-                # sem sa už môžu dostať len chyby z parsovania/serializácie
-                logger.error("Error processing sample %s: %s", sample.name, e, exc_info=True)
-                continue
+        except Exception as e:
+            # sem sa už môžu dostať len chyby z parsovania/serializácie
+            logger.error("Error processing sample %s: %s", sample.get("name"), e, exc_info=True)
+            continue
 
     push_metrics_counter.inc(count)
     return {"status": "ok", "metrics_pushed": count}
@@ -206,10 +304,7 @@ async def get_metrics(
     metrics_by_name: Dict[str, List[Tuple[Dict[str, str], Union[int, float]]]] = defaultdict(list)
     type_by_name: Dict[str, str] = {}
 
-    keys = await redis.keys(f"{REDIS_METRICS_PREFIX}*")
-    logger.debug("Found %d keys in Redis", len(keys))
-
-    for key in keys:
+    async for key in redis.scan_iter(match=f"{REDIS_METRICS_PREFIX}*"):
         if await redis.type(key) != "string":
             continue
         try:

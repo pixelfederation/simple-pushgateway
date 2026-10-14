@@ -1,0 +1,15 @@
+# Same as .dockerignore, but keeps tests/ — the e2e runner image needs them.
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+env/
+venv/
+.git
+.gitignore
+.env
+*.env
+.vscode/
+.idea/
+docs/
+*.log

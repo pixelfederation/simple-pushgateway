@@ -1,0 +1,14 @@
+# E2E test runner image — see docker-compose.yaml (profile "e2e").
+# Uses Dockerfile.e2e.dockerignore, which (unlike .dockerignore) keeps tests/.
+FROM python:3.13-slim
+
+WORKDIR /work
+
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+COPY pyproject.toml ./
+COPY app ./app
+COPY tests ./tests
+
+CMD ["python", "-m", "pytest", "tests/e2e", "-v"]

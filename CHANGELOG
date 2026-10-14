@@ -1,0 +1,7 @@
+## [0.4.0] - 2026-10-14
+
+### Added
+- multiple metrics in json format
+- e2e test
+- support redis auth
+- support redis cluster

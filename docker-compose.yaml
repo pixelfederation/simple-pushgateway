@@ -1,0 +1,86 @@
+# Local development and e2e test services.
+#
+#   docker compose up -d          # redis standalone + redis cluster
+#   docker compose --profile app up -d   # also run the pushgateway itself
+#   E2E=1 pytest tests/e2e        # run e2e tests against these services
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # 3-node Redis Cluster. All nodes share one network namespace and announce
+  # 127.0.0.1, so both inter-node gossip and host clients (via the mapped
+  # ports) reach the nodes on localhost:7000-7002.
+  redis-cluster-node-0:
+    image: redis:7-alpine
+    command: redis-server --port 7000 --cluster-enabled yes --cluster-announce-ip 127.0.0.1 --appendonly no --save ''
+    ports:
+      - "127.0.0.1:7000:7000"
+      - "127.0.0.1:7001:7001"
+      - "127.0.0.1:7002:7002"
+
+  redis-cluster-node-1:
+    image: redis:7-alpine
+    network_mode: "service:redis-cluster-node-0"
+    command: redis-server --port 7001 --cluster-enabled yes --cluster-announce-ip 127.0.0.1 --appendonly no --save ''
+    depends_on:
+      - redis-cluster-node-0
+
+  redis-cluster-node-2:
+    image: redis:7-alpine
+    network_mode: "service:redis-cluster-node-0"
+    command: redis-server --port 7002 --cluster-enabled yes --cluster-announce-ip 127.0.0.1 --appendonly no --save ''
+    depends_on:
+      - redis-cluster-node-0
+
+  redis-cluster-init:
+    image: redis:7-alpine
+    network_mode: "service:redis-cluster-node-0"
+    command: >
+      sh -c "until redis-cli -p 7000 ping && redis-cli -p 7001 ping && redis-cli -p 7002 ping; do sleep 1; done
+      && redis-cli --cluster create 127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 --cluster-yes || true"
+    depends_on:
+      - redis-cluster-node-0
+      - redis-cluster-node-1
+      - redis-cluster-node-2
+    restart: "no"
+
+  # E2E test runner. Shares the cluster node's network namespace so that the
+  # cluster's announced 127.0.0.1:7000-7002 addresses resolve correctly.
+  # Run with: docker compose --profile e2e run --rm e2e-tests
+  e2e-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    profiles: ["e2e"]
+    network_mode: "service:redis-cluster-node-0"
+    environment:
+      E2E: "1"
+      E2E_REDIS_HOST: redis
+      E2E_CLUSTER_HOST: 127.0.0.1
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_completed_successfully
+
+  # The pushgateway itself, built from the local Dockerfile.
+  # Optional: enable with `docker compose --profile app up -d`.
+  pushgateway:
+    build: .
+    profiles: ["app"]
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
