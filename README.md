@@ -154,6 +154,24 @@ Response:
 
 An invalid payload (missing `name`, non-numeric `value`, …) returns `400` with a description of the problem.
 
+#### Pushing counters
+
+Measurements (temperature, battery, queue depth, …) are gauges — the default, no `type` needed. For cumulative counters set `"type": "counter"` in JSON, or a `# TYPE <name> counter` line in the text format:
+
+```bash
+curl -H "Content-Type: application/json" -d '[
+  {"name": "device_temperature_celsius", "value": 38.7, "labels": {"device": "sensor-01"}},
+  {"name": "device_restarts_total", "value": 14, "type": "counter", "labels": {"device": "sensor-01"}},
+  {"name": "device_uplink_bytes_total", "value": 183500.0, "type": "counter", "labels": {"device": "sensor-01"}}
+]' http://localhost:8080/metrics/job/iot_devices
+```
+
+Notes on counters:
+
+- **Name counters with a `_total` suffix.** The Prometheus client library enforces the suffix on the scrape output, so `device_restarts` would be exposed as `device_restarts_total` — naming it `*_total` from the start keeps the pushed and scraped names identical.
+- **Push the cumulative value, not an increment.** The pushgateway only stores and re-exposes the value; it never adds to it. The client must send the total count since its start (e.g. total restarts), exactly as a Prometheus counter would expose it.
+- **Why the type matters:** it drives the `# TYPE` metadata on the scrape output (plus the auto-generated `*_created` series), which PromQL functions like `rate()` and `increase()` rely on.
+
 #### Push from Python
 
 The standard `prometheus_client` Pushgateway API works out of the box:

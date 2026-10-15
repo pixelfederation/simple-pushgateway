@@ -304,3 +304,25 @@ def test_scrape_deduplicates_duplicate_scan_returns(client_with_fake_redis: Test
     scrape = client_with_fake_redis.get("/metrics")
     assert 'dup_counter_total{job="dup-job"} 5.0' in scrape.text
     assert 'dup_gauge{job="dup-job"} 3.0' in scrape.text
+
+
+def test_scrape_keeps_all_label_combinations_of_one_metric(client_with_fake_redis: TestClient) -> None:
+    # Dedupe is per Redis key = per series (name + labels), never per metric
+    # name — all label combinations of one metric must survive.
+    res = client_with_fake_redis.post(
+        "/metrics/job/multi-job",
+        json=[
+            {"name": "multi_metric", "value": 1, "labels": {"db": "users"}},
+            {"name": "multi_metric", "value": 2, "labels": {"db": "orders"}},
+            {"name": "multi_metric", "value": 3, "labels": {"db": "events"}},
+        ],
+    )
+    assert res.status_code == 200
+
+    fake_redis = client_with_fake_redis.app.state.redis  # type: ignore[attr-defined]
+    fake_redis.duplicate_scan = True
+
+    scrape = client_with_fake_redis.get("/metrics")
+    assert 'multi_metric{db="users",job="multi-job"} 1.0' in scrape.text
+    assert 'multi_metric{db="orders",job="multi-job"} 2.0' in scrape.text
+    assert 'multi_metric{db="events",job="multi-job"} 3.0' in scrape.text
