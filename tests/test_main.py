@@ -23,9 +23,12 @@ class FakeRedis:
     store: dict[str, str]
     ttls: dict[str, int]
 
+    duplicate_scan: bool
+
     def __init__(self) -> None:
         self.store = {}
         self.ttls = {}
+        self.duplicate_scan = False
 
     async def set(self, key: str, value: str, ex: int | None = None) -> None:
         self.store[key] = value
@@ -36,6 +39,8 @@ class FakeRedis:
         for key in list(self.store.keys()):
             if match is None or fnmatch.fnmatch(key, match):
                 yield key
+                if self.duplicate_scan:
+                    yield key
 
     async def type(self, key: str) -> str:
         return "string" if key in self.store else "none"
@@ -279,3 +284,23 @@ def test_release_leadership_only_own_lock() -> None:
 
     asyncio.run(_release_leadership(fake, "leader", "pod-a"))
     assert "leader" not in fake.store
+
+
+def test_scrape_deduplicates_duplicate_scan_returns(client_with_fake_redis: TestClient) -> None:
+    # Redis SCAN may return the same key more than once (rehashing, cluster
+    # slot migration) — the scrape must not double-count such keys.
+    res = client_with_fake_redis.post(
+        "/metrics/job/dup-job",
+        json=[
+            {"name": "dup_counter", "value": 5, "type": "counter"},
+            {"name": "dup_gauge", "value": 3},
+        ],
+    )
+    assert res.status_code == 200
+
+    fake_redis = client_with_fake_redis.app.state.redis  # type: ignore[attr-defined]
+    fake_redis.duplicate_scan = True
+
+    scrape = client_with_fake_redis.get("/metrics")
+    assert 'dup_counter_total{job="dup-job"} 5.0' in scrape.text
+    assert 'dup_gauge{job="dup-job"} 3.0' in scrape.text

@@ -404,7 +404,14 @@ async def get_metrics(
             return JSONResponse({})
         return PlainTextResponse(generate_latest(REGISTRY).decode("utf-8"), media_type="text/plain")
 
+    # SCAN may return the same key more than once (rehashing, cluster slot
+    # migration), so collect entries keyed by the Redis key — otherwise a
+    # duplicate would double-count counters on the scrape output.
+    entries_by_key: Dict[str, Dict[str, Any]] = {}
+
     async for key in redis.scan_iter(match=f"{REDIS_METRICS_PREFIX}*"):
+        if key in entries_by_key:
+            continue
         if await redis.type(key) != "string":
             continue
         try:
@@ -412,12 +419,12 @@ async def get_metrics(
             if not entry_raw:
                 continue
             entry = json.loads(entry_raw)
-            name = entry["name"]
-            value = entry["value"]
-            labels = entry["labels"]
-            mtype = entry.get("type", "gauge")
-            metrics_by_name[name].append((labels, value))
-            type_by_name[name] = mtype
+            entries_by_key[key] = {
+                "name": entry["name"],
+                "value": entry["value"],
+                "labels": entry["labels"],
+                "type": entry.get("type", "gauge"),
+            }
 
             logger.debug('redis key: ""%s" value: "%s"', key, entry_raw)
         except json.JSONDecodeError as e:
@@ -430,6 +437,10 @@ async def get_metrics(
             # catch-all, log unexpected issues but don't silently swallow them
             logger.error("Unexpected error processing key %s: %s", key, e, exc_info=True)
             continue
+
+    for entry in entries_by_key.values():
+        metrics_by_name[entry["name"]].append((entry["labels"], entry["value"]))
+        type_by_name[entry["name"]] = entry["type"]
 
     for name, entries in metrics_by_name.items():
         label_keys = sorted({k for labels, _ in entries for k in labels})
